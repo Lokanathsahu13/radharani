@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EduMocker Free Tests</title>
+
+<!-- Firebase Compat -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+
+<style>
+body{margin:0;font-family:Arial;background:#f4f6fb}
+
+/* Loader */
+.loader{
+ position:fixed;inset:0;
+ display:flex;justify-content:center;align-items:center;
+ background:#fff;z-index:9999
+}
+.loader div{
+ width:60px;height:60px;border-radius:50%;
+ border:6px solid #ddd;border-top-color:#4a6cff;
+ animation:spin 1s linear infinite
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Fullscreen quiz loader */
+.quiz-loader{
+ position:fixed;
+ inset:0;
+ background:#fff;
+ display:flex;
+ align-items:center;
+ justify-content:center;
+ z-index:3000
+}
+.quiz-loader .circle{
+ width:80px;
+ height:80px;
+ border-radius:50%;
+ border:8px solid #e0e0e0;
+ border-top-color:#4a6cff;
+ animation:spin 1s linear infinite
+}
+
+/* Test List */
+.container{padding:12px}
+.test-card{
+ background:#fff;border-radius:10px;
+ padding:14px;margin-bottom:12px;
+ box-shadow:0 4px 10px rgba(0,0,0,.08)
+}
+.test-card h3{margin:0 0 6px;font-size:16px}
+.test-card p{margin:4px 0;font-size:13px;color:#555}
+.btn{
+ background:#4a6cff;color:#fff;
+ padding:8px 14px;border:none;
+ border-radius:6px;font-size:14px;cursor:pointer
+}
+#moreBtn{width:100%;margin:12px 0}
+
+/* Quiz */
+.fullscreen{
+ position:fixed;inset:0;
+ background:#fff;z-index:1000;
+ padding:14px;overflow:auto
+}
+.timer{
+ position:fixed;top:10px;right:14px;
+ font-weight:bold
+}
+.option{
+ padding:10px;margin:6px 0;
+ border:1px solid #ccc;border-radius:6px;
+ cursor:pointer
+}
+.option.active{background:#4a6cff;color:#fff}
+.navBtns{display:flex;justify-content:space-between;margin-top:10px}
+
+/* Result */
+.filter-wrap{
+ display:flex;gap:8px;margin:12px 0
+}
+.filter-card{
+ flex:1;padding:8px;
+ background:#e8ecff;border-radius:6px;
+ text-align:center;cursor:pointer
+}
+.filter-card.active{background:#4a6cff;color:#fff}
+
+/* Popup */
+.popup{
+ position:fixed;inset:0;
+ background:rgba(0,0,0,.5);
+ display:flex;align-items:center;justify-content:center;
+ z-index:2000
+}
+.popup>div{
+ background:#fff;padding:18px;
+ border-radius:8px;width:90%;max-width:320px;
+ text-align:center
+}
+.hidden{display:none}
+.explain{color:#4a6cff;font-size:13px;cursor:pointer}
+</style>
+</head>
+<body>
+
+<div class="loader" id="loader"><div></div></div>
+
+<div class="container" id="testList"></div>
+<button class="btn" id="moreBtn">More</button>
+
+<div id="quiz" class="fullscreen hidden"></div>
+<div id="popup" class="popup hidden"></div>
+
+<!-- Quiz Loading Screen -->
+<div id="quizLoader" class="quiz-loader hidden">
+ <div class="circle"></div>
+</div>
+
+<script>
+/* Firebase Init */
+firebase.initializeApp({
+ apiKey: "AIzaSyA7CGL8OEtS64NnmuUQNmOOPoCbUDFTTiU",
+ authDomain: "edumocker-free-tests.firebaseapp.com",
+ projectId: "edumocker-free-tests"
+});
+const db=firebase.firestore();
+
+/* State */
+let lastDoc=null,loading=false;
+let currentTestId=null,questions=[],answers=[],qIndex=0,timerInt;
+
+/* Fullscreen + loader helpers */
+function openFullscreen(){
+ let el=document.documentElement;
+ if(el.requestFullscreen) el.requestFullscreen();
+ else if(el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+}
+function showQuizLoader(){
+ quizLoader.classList.remove("hidden");
+}
+function hideQuizLoader(){
+ quizLoader.classList.add("hidden");
+}
+
+/* Load Tests */
+async function loadTests(){
+ if(loading) return;
+ loading=true;
+
+ let q=db.collection("tests").orderBy("createdAt","desc").limit(10);
+ if(lastDoc) q=q.startAfter(lastDoc);
+
+ let snap=await q.get();
+ if(snap.empty){
+  moreBtn.innerText="No more tests";
+  moreBtn.disabled=true;
+ }
+
+ snap.forEach(doc=>{
+  lastDoc=doc;
+  let d=doc.data();
+  let score=localStorage.getItem("score_"+doc.id);
+
+  testList.innerHTML+=`
+   <div class="test-card">
+    <h3>${d.testName || doc.id}</h3>
+    <p>⏱ Time: ${d.time} min</p>
+    <p>📘 Questions: ${d.questions.length}</p>
+    <button class="btn"
+      onclick="${score?`openScore('${doc.id}')`:`startTest('${doc.id}')`}">
+      ${score?"Reattempt":"Attempt"}
+    </button>
+   </div>`;
+ });
+
+ loader.style.display="none";
+ loading=false;
+}
+
+/* Start Test */
+async function startTest(id){
+ openFullscreen();
+ showQuizLoader();
+
+ currentTestId=id;
+ let snap=await db.collection("tests").doc(id).get();
+ let data=snap.data();
+
+ questions=data.questions;
+ answers=new Array(questions.length).fill(null);
+ qIndex=0;
+
+ setTimeout(()=>{
+  hideQuizLoader();
+  startTimer(data.time*60);
+  renderQuiz();
+ },500);
+}
+
+/* Timer */
+function startTimer(sec){
+ clearInterval(timerInt);
+ timerInt=setInterval(()=>{
+  if(sec<=0){submitQuiz();return;}
+  let m=Math.floor(sec/60),s=sec%60;
+  time.innerText=`${m}:${("0"+s).slice(-2)}`;
+  sec--;
+ },1000);
+}
+
+/* Render Quiz */
+function renderQuiz(){
+ let q=questions[qIndex];
+ quiz.innerHTML=`
+  <div class="timer">⏱ <span id="time"></span></div>
+  <p><b>Instruction:</b> ${q.instruction||""}</p>
+  <h3>Q${qIndex+1}. ${q.question}</h3>
+  ${q.options.map((o,i)=>`
+   <div class="option ${answers[qIndex]==i?"active":""}"
+    onclick="selectOpt(${i})">${o}</div>`).join("")}
+  <div class="navBtns">
+   <button class="btn" onclick="prev()">Previous</button>
+   <button class="btn"
+    onclick="${qIndex==questions.length-1?"submitQuiz()":"next()"}">
+    ${qIndex==questions.length-1?"Submit":"Next"}
+   </button>
+  </div>`;
+ quiz.classList.remove("hidden");
+}
+function selectOpt(i){answers[qIndex]=i;renderQuiz();}
+function next(){qIndex++;renderQuiz();}
+function prev(){if(qIndex>0){qIndex--;renderQuiz();}}
+
+/* Submit */
+function submitQuiz(){
+ clearInterval(timerInt);
+ let c=0,w=0,u=0;
+ questions.forEach((q,i)=>{
+  if(answers[i]==null)u++;
+  else if(answers[i]==q.correctOption)c++;
+  else w++;
+ });
+ localStorage.setItem("score_"+currentTestId,
+  JSON.stringify({c,w,u,answers}));
+ showResult();
+}
+
+/* Result Page */
+function showResult(){
+ let s=JSON.parse(localStorage.getItem("score_"+currentTestId));
+ quiz.innerHTML=`
+  <h2>Score: ${s.c}/${questions.length}</h2>
+  <p>Correct: ${s.c} | Wrong: ${s.w} | Unattempted: ${s.u}</p>
+
+  <div class="filter-wrap">
+   <div class="filter-card active" onclick="filter('all',this)">All</div>
+   <div class="filter-card" onclick="filter('c',this)">Correct</div>
+   <div class="filter-card" onclick="filter('w',this)">Wrong</div>
+   <div class="filter-card" onclick="filter('u',this)">Unattempted</div>
+  </div>
+
+  <div id="res"></div>
+  <button class="btn" onclick="restartPopup()">Restart</button>`;
+ quiz.classList.remove("hidden");
+ filter("all");
+}
+
+/* Filters */
+function filter(t,el){
+ document.querySelectorAll('.filter-card')
+  .forEach(x=>x.classList.remove("active"));
+ if(el) el.classList.add("active");
+
+ let s=JSON.parse(localStorage.getItem("score_"+currentTestId));
+ let h="";
+ questions.forEach((q,i)=>{
+  let st=s.answers[i]==null?"u":
+   (s.answers[i]==q.correctOption?"c":"w");
+  if(t!="all" && st!=t) return;
+  h+=`
+   <div class="test-card">
+    <b>Q${i+1}:</b> ${q.question}<br>
+    Your: ${s.answers[i]??"NA"} | Correct: ${q.correctOption}
+    <div class="explain"
+     onclick="this.nextElementSibling.classList.toggle('hidden')">
+     Explanation >
+    </div>
+    <div class="hidden">${q.explanation||""}</div>
+   </div>`;
+ });
+ res.innerHTML=h;
+}
+
+/* Reattempt */
+async function openScore(id){
+ openFullscreen();
+ showQuizLoader();
+
+ currentTestId=id;
+ let snap=await db.collection("tests").doc(id).get();
+ questions=snap.data().questions;
+
+ setTimeout(()=>{
+  hideQuizLoader();
+  showResult();
+ },400);
+}
+
+/* Restart */
+function restartPopup(){
+ popup.innerHTML=`
+ <div>
+  <p>Your old score will be deleted</p>
+  <button class="btn" onclick="restart()">OK</button>
+ </div>`;
+ popup.classList.remove("hidden");
+}
+function restart(){
+ localStorage.removeItem("score_"+currentTestId);
+ popup.classList.add("hidden");
+ startTest(currentTestId);
+}
+
+/* Init */
+loadTests();
+moreBtn.onclick=loadTests;
+</script>
+</body>
+</html>
